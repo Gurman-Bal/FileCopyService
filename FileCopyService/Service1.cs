@@ -8,30 +8,44 @@ using System.Linq;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
+
+//cd C:\Windows\Microsoft.NET\Framework\v4.0.30319
+//InstallUtil.exe C:\Projects\FileCopyService\FileCopyService\bin\Debug\FileCopyService.exe
+//InstallUtil.exe -u C:\Projects\FileCopyService\FileCopyService\bin\Debug\FileCopyService.exe
 
 namespace FileCopyService
 {
     public partial class Service1 : ServiceBase
     {
-        private FileSystemWatcher watcher;
-        private string sourceDir = @"C:\Users\Nya\Downloads";
-        private string targetDir = @"C:\Users\Nya\Documents";
-        private string logSource = "C:\\Projects\\FileCopyService\\FileCopyService\\logs";
+        private List<FileSystemWatcher> watchers = new List<FileSystemWatcher>();
+        private string configFilePath = @"C:\Projects\FileCopyService\FileCopyService\config.json";
+        private string logSource = "FileCopyServiceSource";
         private string logName = "FileCopyServiceLog";
 
         public Service1()
         {
-            // Set up Event Log if it doesn't already exist
-            if (!EventLog.SourceExists(logSource))
+            try
             {
-                EventLog.CreateEventSource(logSource, logName);
+                // Set up Event Log if it doesn't already exist
+                if (!EventLog.SourceExists(logSource))
+                {
+                    EventLog.CreateEventSource(logSource, logName);
+                }
+
+                EventLog.Source = logSource;
+                EventLog.Log = logName;
+
+                // Log service initialization
+                EventLog.WriteEntry("FileCopyService initialized.");
+            }
+            catch (Exception ex)
+            {
+                // Log initialization error
+                File.AppendAllText(@"C:\Projects\FileCopyService\FileCopyService\logs\service_init_error.txt", $"{DateTime.Now}: Error during service initialization - {ex.Message}\n");
+                throw; // Re-throw the exception to prevent service from starting
             }
 
-            EventLog.Source = logSource;
-            EventLog.Log = logName;
-
-            // Log service start
-            EventLog.WriteEntry("FileCopyService initialized.");
             InitializeComponent();
         }
 
@@ -39,22 +53,28 @@ namespace FileCopyService
         {
             try
             {
-                // Set up FileSystemWatcher
-                watcher = new FileSystemWatcher(sourceDir)
-                {
-                    Filter = "*.*", // Watch all files; change to "*.txt" or other types as needed
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
-                    EnableRaisingEvents = true
-                };
+                var directoryPairs = LoadConfiguration(configFilePath);
 
-                // Hook up event handlers
-                watcher.Created += OnFileCreated;
+                foreach (var pair in directoryPairs)
+                {
+                    var watcher = new FileSystemWatcher(pair.SourceDir)
+                    {
+                        Filter = "*.*", // Watch all files; change to "*.txt" or other types as needed
+                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                        EnableRaisingEvents = true
+                    };
+
+                    // Hook up event handlers with dynamic targetDir
+                    watcher.Created += (sender, e) => OnFileCreated(sender, e, pair.TargetDir);
+                    watchers.Add(watcher);
+                }
 
                 // Log service start
                 EventLog.WriteEntry("FileCopyService started successfully.");
             }
             catch (Exception ex)
             {
+                // Log error during service start
                 EventLog.WriteEntry($"Error during service start: {ex.Message}", EventLogEntryType.Error);
                 Stop(); // Stop service if something goes wrong during start
             }
@@ -64,7 +84,7 @@ namespace FileCopyService
         {
             try
             {
-                if (watcher != null)
+                foreach (var watcher in watchers)
                 {
                     watcher.EnableRaisingEvents = false;
                     watcher.Dispose();
@@ -75,11 +95,12 @@ namespace FileCopyService
             }
             catch (Exception ex)
             {
+                // Log error during service stop
                 EventLog.WriteEntry($"Error during service stop: {ex.Message}", EventLogEntryType.Error);
             }
         }
 
-        private void OnFileCreated(object sender, FileSystemEventArgs e)
+        private void OnFileCreated(object sender, FileSystemEventArgs e, string targetDir)
         {
             try
             {
@@ -113,5 +134,31 @@ namespace FileCopyService
                 EventLog.WriteEntry($"Error copying file {e.FullPath}: {ex.Message}", EventLogEntryType.Error);
             }
         }
+
+        private List<DirectoryPair> LoadConfiguration(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    throw new FileNotFoundException("Configuration file not found.");
+
+                string json = File.ReadAllText(path);
+                var directoryPairs = JsonConvert.DeserializeObject<List<DirectoryPair>>(json);
+
+                return directoryPairs;
+            }
+            catch (Exception ex)
+            {
+                // Log configuration loading error
+                File.AppendAllText(@"C:\Projects\FileCopyService\FileCopyService\logs\config_load_error.txt", $"{DateTime.Now}: Error loading configuration - {ex.Message}\n");
+                throw;
+            }
+        }
+    }
+
+    public class DirectoryPair
+    {
+        public string SourceDir { get; set; }
+        public string TargetDir { get; set; }
     }
 }
